@@ -1,3 +1,6 @@
+# Local notes
+answer.md
+
 # Rust / WASM build
 target/
 *.wasm

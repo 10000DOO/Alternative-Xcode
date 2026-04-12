@@ -1,0 +1,19 @@
+# Rust / WASM build
+target/
+*.wasm
+
+# macOS
+.DS_Store
+
+# Zed dev extension
+.zed/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*~
+
+# Build logs
+build/
+*.log

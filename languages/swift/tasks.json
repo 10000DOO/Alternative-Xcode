@@ -1,0 +1,9 @@
+[
+  {
+    "label": "Xcode: Hello (Spike Test)",
+    "command": "echo",
+    "args": ["Hello from Xcode Tools extension!"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "reveal": "always"
+  }
+]

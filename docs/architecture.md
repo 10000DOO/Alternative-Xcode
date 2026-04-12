@@ -43,7 +43,7 @@ graph TB
 xcode-tools/
 ├── extension.toml                    # 매니페스트
 ├── Cargo.toml                        # Rust 의존성
-├── LICENSE                           # MIT
+├── LICENSE                           # Apache 2.0
 ├── src/
 │   └── lib.rs                        # Extension trait + DAP
 │                                     # v0.2: dap.rs 분리 예정

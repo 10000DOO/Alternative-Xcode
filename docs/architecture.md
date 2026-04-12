@@ -47,8 +47,11 @@ xcode-tools/
 ├── src/
 │   └── lib.rs                        # Extension trait + DAP
 │                                     # v0.2: dap.rs 분리 예정
+├── scripts/
+│   └── helpers.sh                    # Task 공용 셸 함수 (번들)
 ├── languages/
 │   └── swift/
+│       ├── config.toml               # 언어 선언 (tasks.json 인식에 필요할 수 있음)
 │       └── tasks.json                # Task 정의 (5개)
 │                                     # v0.2: languages/objective-c/ 추가 검토
 ├── debug_adapter_schemas/
@@ -74,7 +77,7 @@ sequenceDiagram
     Zed-->>User: "Xcode: Build" 표시
     User->>Zed: task 선택
 
-    Zed->>Term: bash -c "... && xcode_build"
+    Zed->>Term: bash -c "source helpers.sh && xcode_build"
     Term->>Term: xcode_detect_project()
     Note over Term: .xcworkspace → .xcodeproj 순서 탐색
     Term->>Term: xcode_select_scheme()
@@ -97,6 +100,9 @@ sequenceDiagram
 
 ### DAP 디버깅 흐름
 
+DAP(Debug Adapter Protocol)은 Zed가 디버거(lldb-dap)와 통신하는 규약이다.
+우리 extension은 Zed에게 **"어떤 디버거를 어떻게 실행할지"** 알려주는 역할만 한다.
+
 ```mermaid
 sequenceDiagram
     actor User as 사용자
@@ -110,7 +116,7 @@ sequenceDiagram
     Zed->>Zed: .zed/debug.json 읽기
     Zed->>WASM: get_dap_binary()
     WASM->>WASM: resolve_dap_binary()
-    Note over WASM: user path → xcrun → bare
+    Note over WASM: worktree.which("xcrun")<br/>→ worktree.which("lldb-dap")
     WASM-->>Zed: DebugAdapterBinary
 
     Zed->>LLDB: 프로세스 시작
@@ -160,6 +166,42 @@ sequenceDiagram
 
 ## 3. WASM Extension 설계 (src/lib.rs)
 
+### DAP 타입 관계도
+
+우리 extension이 다루는 Zed DAP 타입들의 관계:
+
+```mermaid
+graph TD
+    subgraph "사용자가 작성"
+        DJ[".zed/debug.json<br/>(디버그 설정 파일)"]
+    end
+
+    subgraph "Zed가 파싱하여 전달"
+        DTD["DebugTaskDefinition<br/>label, adapter, config(JSON)"]
+        DC["DebugConfig<br/>label, adapter, request, stop_on_entry"]
+    end
+
+    subgraph "DebugRequest (디버그 방식)"
+        LR["Launch: 새 앱 실행<br/>program, cwd, args, envs"]
+        AR["Attach: 실행중인 앱에 붙기<br/>process_id"]
+    end
+
+    subgraph "우리 extension이 반환"
+        DAB["DebugAdapterBinary<br/>command, arguments, envs, cwd"]
+        DS["DebugScenario<br/>label, adapter, config(JSON)"]
+    end
+
+    DJ -->|"get_dap_binary()"| DTD
+    DJ -->|"dap_config_to_scenario()"| DC
+    DC --> LR
+    DC --> AR
+    DTD -->|"extension 처리"| DAB
+    DC -->|"extension 처리"| DS
+
+    style DAB fill:#e8f5e9,stroke:#2e7d32
+    style DS fill:#e8f5e9,stroke:#2e7d32
+```
+
 ### 모듈 구조
 
 ```mermaid
@@ -199,12 +241,15 @@ flowchart TD
     UserPath -->|있음| UseUser[user 경로 사용]
     UserPath -->|없음| V02{v0.2: custom wrapper?}
 
-    V02 -->|"v0.1: 스킵"| XCRun{xcrun 존재?}
+    V02 -->|"v0.1: 스킵"| XCRun{"worktree.which('xcrun')<br/>존재?"}
     V02 -->|"v0.2: 있음"| UseWrapper[custom wrapper 사용]
     V02 -->|"v0.2: 없음/실패"| XCRun
 
     XCRun -->|있음| UseXCRun["xcrun lldb-dap"]
-    XCRun -->|없음| UseBare["bare lldb-dap"]
+    XCRun -->|없음| WhichLLDB{"worktree.which('lldb-dap')<br/>존재?"}
+
+    WhichLLDB -->|있음| UseBare["bare lldb-dap"]
+    WhichLLDB -->|없음| Error["에러 반환"]
 
     UseUser --> Return[DebugAdapterBinary 반환]
     UseWrapper --> Return
@@ -215,21 +260,145 @@ flowchart TD
     style UseWrapper fill:#fff3e0,stroke:#e65100,stroke-dasharray: 5 5
 ```
 
-### XcodeDebugConfig 구조
+### 실제 API 기준 코드 구조
 
-```mermaid
-classDiagram
-    class XcodeDebugConfig {
-        +String request
-        +Option~String~ program
-        +Option~String~ cwd
-        +Vec~String~ args
-        +HashMap env
-        +Option~u32~ pid
-        +Option~bool~ stop_on_entry
+```rust
+use zed_extension_api as zed;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+
+const ADAPTER_NAME: &str = "xcode-debug";
+
+// ── 사용자 debug.json 설정을 파싱하는 구조체 ──
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct XcodeDebugConfig {
+    request: String,                           // "launch" | "attach"
+    #[serde(default)] program: Option<String>, // 실행 파일 경로
+    #[serde(default)] cwd: Option<String>,     // 작업 디렉토리
+    #[serde(default)] args: Vec<String>,       // 실행 인자
+    #[serde(default)] env: HashMap<String, String>, // 환경 변수
+    #[serde(default)] process_id: Option<u32>, // attach 대상 PID
+    #[serde(default)] stop_on_entry: Option<bool>,
+    // v0.2 확장: simulator_device, wait_for_debugger
+}
+
+struct XcodeToolsExtension;
+
+impl zed::Extension for XcodeToolsExtension {
+    fn new() -> Self { XcodeToolsExtension }
+
+    // Zed가 디버그 세션 시작 시 호출: "어떤 디버거를 실행할지" 반환
+    fn get_dap_binary(
+        &mut self,
+        adapter_name: String,
+        config: zed::DebugTaskDefinition,   // .zed/debug.json 원본
+        user_provided_debug_adapter_path: Option<String>,
+        worktree: &zed::Worktree,
+    ) -> Result<zed::DebugAdapterBinary, String> {
+        if adapter_name != ADAPTER_NAME {
+            return Err(format!("Unknown adapter: {adapter_name}"));
+        }
+
+        let parsed: XcodeDebugConfig = serde_json::from_str(&config.config)
+            .map_err(|e| format!("Config parse error: {e}"))?;
+
+        let request = match parsed.request.as_str() {
+            "launch" => zed::StartDebuggingRequestArgumentsRequest::Launch,
+            "attach" => zed::StartDebuggingRequestArgumentsRequest::Attach,
+            _ => return Err(format!("Invalid request: {}", parsed.request)),
+        };
+
+        // lldb-dap 바이너리 탐색 (worktree.which() 사용)
+        let (command, arguments) = resolve_dap_binary(
+            user_provided_debug_adapter_path, worktree
+        )?;
+
+        Ok(zed::DebugAdapterBinary {
+            command: Some(command),
+            arguments,
+            envs: vec![],
+            cwd: Some(parsed.cwd.unwrap_or_else(|| worktree.root_path())),
+            connection: None,
+            request_args: zed::StartDebuggingRequestArguments {
+                configuration: config.config,
+                request,
+            },
+        })
     }
 
-    note for XcodeDebugConfig "모든 필드 #[serde(default)]<br/>→ 새 필드 추가 시 하위 호환"
+    // config JSON에서 launch/attach 판별
+    fn dap_request_kind(
+        &mut self,
+        _adapter_name: String,
+        config: serde_json::Value,
+    ) -> Result<zed::StartDebuggingRequestArgumentsRequest, String> {
+        match config.get("request").and_then(|v| v.as_str()) {
+            Some("launch") => Ok(zed::StartDebuggingRequestArgumentsRequest::Launch),
+            Some("attach") => Ok(zed::StartDebuggingRequestArgumentsRequest::Attach),
+            Some(other) => Err(format!("Unknown request: {other}")),
+            None => Err("Missing 'request' field".to_string()),
+        }
+    }
+
+    // Zed 내부 DebugConfig → 우리 adapter용 DebugScenario 변환
+    fn dap_config_to_scenario(
+        &mut self,
+        config: zed::DebugConfig,   // ← DebugConfig { request: DebugRequest, ... }
+    ) -> Result<zed::DebugScenario, String> {
+        let debug_config = match &config.request {
+            zed::DebugRequest::Launch(launch) => XcodeDebugConfig {
+                request: "launch".to_string(),
+                program: Some(launch.program.clone()),
+                cwd: launch.cwd.clone(),
+                args: launch.args.clone(),
+                env: launch.envs.iter().cloned().collect(),
+                process_id: None,
+                stop_on_entry: config.stop_on_entry,
+            },
+            zed::DebugRequest::Attach(attach) => XcodeDebugConfig {
+                request: "attach".to_string(),
+                program: None,
+                cwd: None,
+                args: vec![],
+                env: HashMap::new(),
+                process_id: attach.process_id,
+                stop_on_entry: None,
+            },
+        };
+
+        Ok(zed::DebugScenario {
+            label: config.label,
+            adapter: ADAPTER_NAME.to_string(),
+            build: None,
+            config: serde_json::to_string(&debug_config)
+                .map_err(|e| format!("Serialize error: {e}"))?,
+            tcp_connection: None,
+        })
+    }
+}
+
+// lldb-dap 바이너리 탐색 (worktree.which() API 사용)
+fn resolve_dap_binary(
+    user_path: Option<String>,
+    worktree: &zed::Worktree,
+) -> Result<(String, Vec<String>), String> {
+    // 1. 사용자 지정 경로
+    if let Some(path) = user_path {
+        return Ok((path, vec![]));
+    }
+    // 2. xcrun lldb-dap (Xcode 내장, 가장 안정적)
+    if worktree.which("xcrun".to_string()).is_some() {
+        return Ok(("xcrun".to_string(), vec!["lldb-dap".to_string()]));
+    }
+    // 3. bare lldb-dap
+    if let Some(path) = worktree.which("lldb-dap".to_string()) {
+        return Ok((path, vec![]));
+    }
+    Err("lldb-dap not found. Install Xcode or set debug adapter path.".to_string())
+}
+
+zed::register_extension!(XcodeToolsExtension);
 ```
 
 ### 설계 원칙
@@ -238,26 +407,43 @@ classDiagram
 |------|------|
 | `#[serde(default)]` 전 필드 | 새 필드 추가 시 기존 config 하위 호환 |
 | `resolve_dap_binary()` 독립 함수 | v0.2 모듈 분리 시 변경 최소화 |
+| `worktree.which()` 사용 | Zed 공식 API로 바이너리 탐색 (커스텀 함수 불필요) |
 | eval 미사용, `"$@"` 사용 | 셸 인젝션 방지 |
 
 ---
 
 ## 4. Task 셸 스크립트 설계
 
-### 자기 부트스트랩 패턴
+### 번들 방식 — helpers.sh를 extension에 포함
+
+Extension 설치 시 `scripts/helpers.sh`가 함께 배포된다.
+각 task는 이 파일을 직접 source하여 사용한다.
 
 ```mermaid
 flowchart TD
-    TaskRun["task 실행<br/>(bash -c)"] --> Check{"~/.cache/xcode-tools/<br/>helpers.sh 존재?"}
-
-    Check -->|없음| Write["helpers.sh 작성<br/>(함수 정의 포함)"]
-    Write --> Source["source helpers.sh"]
-
-    Check -->|있음| Source
+    TaskRun["task 실행<br/>(bash -c)"] --> Source["source .../xcode-tools/scripts/helpers.sh"]
     Source --> Exec["xcode_build() 등 실행"]
-
-    style Write fill:#e8f5e9,stroke:#2e7d32
 ```
+
+**설치된 extension 경로** (macOS):
+```
+~/Library/Application Support/Zed/extensions/installed/xcode-tools/
+```
+
+**tasks.json 내 각 task 구조**:
+```json
+{
+  "label": "Xcode: Build",
+  "command": "bash",
+  "args": [
+    "-c",
+    "source \"$HOME/Library/Application Support/Zed/extensions/installed/xcode-tools/scripts/helpers.sh\" && xcode_build"
+  ]
+}
+```
+
+> **Dev Extension 주의**: 개발 중 "Install Dev Extension"으로 설치하면 경로가 다를 수 있음.
+> S1-2 Spike에서 dev/production 경로 차이를 검증하고, 필요 시 fallback 경로 추가.
 
 ### helpers.sh 함수 관계
 
@@ -401,6 +587,7 @@ graph LR
         A2[system lldb-dap]
         A3["tasks: swift만"]
         A4[env 하드코딩]
+        A5[scripts/helpers.sh 번들]
     end
 
     subgraph v02["v0.2 Enhanced"]
@@ -444,18 +631,22 @@ graph LR
 
 ## 6. 기술 참고
 
+### Zed Extension API 주요 타입 (v0.7.0 기준)
+
+| 타입 | 역할 | 주요 필드 |
+|------|------|-----------|
+| `DebugAdapterBinary` | 디버거 실행 정보 | `command`, `arguments`, `envs`, `cwd`, `connection`, `request_args` |
+| `DebugTaskDefinition` | debug.json에서 읽은 원본 | `label`, `adapter`, `config(JSON)`, `tcp_connection` |
+| `DebugConfig` | Zed 내부 디버그 설정 | `label`, `adapter`, `request: DebugRequest`, `stop_on_entry` |
+| `DebugRequest` | Launch/Attach 분기 | `Launch { program, cwd, args, envs }`, `Attach { process_id }` |
+| `DebugScenario` | 디버그 실행 계획 | `label`, `adapter`, `build`, `config(JSON)`, `tcp_connection` |
+| `Worktree` | 프로젝트 정보 | `id()`, `root_path()`, `which()`, `read_text_file()`, `shell_env()` |
+
 ### lldb-dap Fallback Chain (v0.1)
 
-[zed-extensions/swift](https://github.com/zed-extensions/swift) 패턴:
-1. user-provided path → 2. `xcrun lldb-dap` → 3. bare `lldb-dap`
-
-### Zed Extension API 주요 타입
-
-| 타입 | 필드 |
-|------|------|
-| `DebugAdapterBinary` | command, arguments, envs, cwd, request_args |
-| `DebugScenario` | label, adapter, build, config (JSON), tcp_connection |
-| `DebugTaskDefinition` | label, adapter, config (JSON) |
+[zed-extensions/swift](https://github.com/zed-extensions/swift) 패턴 참고.
+`worktree.which()` API로 바이너리 탐색:
+1. user-provided path → 2. `worktree.which("xcrun")` + `["lldb-dap"]` → 3. `worktree.which("lldb-dap")`
 
 ### Extension API 헬퍼 (v0.2 DAP 래퍼 배포 시)
 
@@ -482,4 +673,4 @@ git submodule add https://github.com/<user>/xcode-tools.git extensions/xcode-too
 submodule = "extensions/xcode-tools"
 version = "1.0.0"
 ```
-필수: 허용 라이선스 파일 (MIT, Apache 2.0 등). `pnpm sort-extensions` 실행.
+필수: 허용 라이선스 파일 (Apache 2.0 등). `pnpm sort-extensions` 실행.

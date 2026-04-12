@@ -154,7 +154,8 @@ Zed 에디터에서 Xcode 없이 iOS/macOS 앱을 빌드, 실행, 테스트, 디
 | 항목 | 상태 | 비고 |
 |------|------|------|
 | Extension 라이선스 | **Apache 2.0** | LICENSE 파일 확정 |
-| `languages/swift/tasks.json` 동작 여부 | S1-2에서 검증 | 미동작 시 `.zed/tasks.json` 전환 |
+| `languages/swift/tasks.json` 동작 여부 | S1-2에서 검증 | config.toml 필요 가능성. 미동작 시 `.zed/tasks.json` 전환 |
+| Extension 번들 파일 경로 (helpers.sh) | S1-2에서 검증 | dev/production 경로 차이 확인 필요 |
 | runnables.scm 제공 가능 여부 | v0.2에서 검증 | grammar 미소유 시 불가 |
 | MCP 서버 런타임 | v2.0에서 결정 | Node.js vs Rust |
 

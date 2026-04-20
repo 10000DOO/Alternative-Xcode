@@ -24,12 +24,12 @@
       "default": []
     },
     "env": {
-      "type": "object",
-      "additionalProperties": { "type": "string" },
-      "description": "Environment variables",
-      "default": {}
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Environment variables in KEY=VALUE format (e.g. [\"FOO=1\", \"BAR=hello\"])",
+      "default": []
     },
-    "processId": {
+    "pid": {
       "type": "integer",
       "description": "Process ID to attach to (attach mode only)"
     },
@@ -37,8 +37,32 @@
       "type": "boolean",
       "description": "Break at the entry point",
       "default": false
+    },
+    "waitFor": {
+      "type": "boolean",
+      "description": "Wait for process to launch before attaching (attach mode only)",
+      "default": false
     }
   },
-  "if": { "properties": { "request": { "const": "launch" } } },
-  "then": { "required": ["program"] }
+  "allOf": [
+    {
+      "if": { "properties": { "request": { "const": "launch" } }, "required": ["request"] },
+      "then": { "required": ["program"] }
+    },
+    {
+      "if": { "properties": { "request": { "const": "attach" } }, "required": ["request"] },
+      "then": {
+        "anyOf": [
+          { "required": ["pid"] },
+          { "required": ["program"] }
+        ],
+        "allOf": [
+          {
+            "if": { "required": ["pid"] },
+            "then": { "not": { "properties": { "waitFor": { "const": true } } } }
+          }
+        ]
+      }
+    }
+  ]
 }

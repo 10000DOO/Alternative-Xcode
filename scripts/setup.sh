@@ -75,6 +75,47 @@ INSTALL_DIR_ESCAPED=$(echo "$INSTALL_DIR" | sed 's/"/\\"/g')
 cat > "$TASKS_FILE" << TASKEOF
 [
   {
+    "label": "\$ZED_CUSTOM_SWIFT_TEST_CLASS test",
+    "command": "\"${HELPER_PATH_ESCAPED}\"",
+    "args": [
+      "inline-test",
+      "--test-class",
+      "\$ZED_CUSTOM_SWIFT_TEST_CLASS"
+    ],
+    "cwd": "\$ZED_WORKTREE_ROOT",
+    "use_new_terminal": false,
+    "allow_concurrent_runs": false,
+    "tags": ["swift-xctest-class", "swift-testing-suite"]
+  },
+  {
+    "label": "\$ZED_CUSTOM_SWIFT_TEST_CLASS.\$ZED_CUSTOM_SWIFT_TEST_FUNC test",
+    "command": "\"${HELPER_PATH_ESCAPED}\"",
+    "args": [
+      "inline-test",
+      "--test-class",
+      "\$ZED_CUSTOM_SWIFT_TEST_CLASS",
+      "--test-func",
+      "\$ZED_CUSTOM_SWIFT_TEST_FUNC"
+    ],
+    "cwd": "\$ZED_WORKTREE_ROOT",
+    "use_new_terminal": false,
+    "allow_concurrent_runs": false,
+    "tags": ["swift-xctest-func", "swift-testing-member-func"]
+  },
+  {
+    "label": "\$ZED_CUSTOM_SWIFT_TEST_FUNC test",
+    "command": "\"${HELPER_PATH_ESCAPED}\"",
+    "args": [
+      "inline-test",
+      "--test-func",
+      "\$ZED_CUSTOM_SWIFT_TEST_FUNC"
+    ],
+    "cwd": "\$ZED_WORKTREE_ROOT",
+    "use_new_terminal": false,
+    "allow_concurrent_runs": false,
+    "tags": ["swift-testing-bare-func"]
+  },
+  {
     "label": "Xcode: Build (Debug)",
     "command": "\"${HELPER_PATH_ESCAPED}\" build -c Debug",
     "use_new_terminal": false,

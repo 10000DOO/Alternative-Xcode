@@ -5,5 +5,25 @@
     "args": ["Hello from Xcode Tools extension!"],
     "cwd": "$ZED_WORKTREE_ROOT",
     "reveal": "always"
+  },
+  {
+    "label": "Xcode: Test Class ($ZED_CUSTOM_SWIFT_TEST_CLASS)",
+    "command": "bash",
+    "args": [
+      "-c",
+      "for p in \"$ZED_EXTENSION_DIR\" \"$HOME/Library/Application Support/Zed/extensions/installed/xcode-tools\" \"$HOME/Library/Application Support/Zed/extensions/work/xcode-tools\" \"$HOME/zed-dev-extensions/xcode-tools\"; do if [ -f \"$p/scripts/helpers.sh\" ]; then source \"$p/scripts/helpers.sh\"; break; fi; done && action_test --test-class \"$ZED_CUSTOM_SWIFT_TEST_CLASS\""
+    ],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "tags": ["swift-xctest-class", "swift-testing-suite"]
+  },
+  {
+    "label": "Xcode: Test Function ($ZED_CUSTOM_SWIFT_TEST_FUNC)",
+    "command": "bash",
+    "args": [
+      "-c",
+      "for p in \"$ZED_EXTENSION_DIR\" \"$HOME/Library/Application Support/Zed/extensions/installed/xcode-tools\" \"$HOME/Library/Application Support/Zed/extensions/work/xcode-tools\" \"$HOME/zed-dev-extensions/xcode-tools\"; do if [ -f \"$p/scripts/helpers.sh\" ]; then source \"$p/scripts/helpers.sh\"; break; fi; done && action_test --test-class \"$ZED_CUSTOM_SWIFT_TEST_CLASS\" --test-func \"$ZED_CUSTOM_SWIFT_TEST_FUNC\""
+    ],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "tags": ["swift-xctest-func", "swift-testing-member-func", "swift-testing-bare-func"]
   }
 ]

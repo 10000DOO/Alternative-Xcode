@@ -192,7 +192,8 @@ _run_cmd() {
         "$@" 2>&1 | tee "$_LAST_LOG" | xcbeautify
         return ${PIPESTATUS[0]}
     else
-        "$@" 2>&1 | tee "$_LAST_LOG"
+        # Very simple fallback to filter out noise from xcodebuild when xcbeautify is missing
+        "$@" 2>&1 | tee "$_LAST_LOG" | grep -v "^    " | grep -E "^(===|Build|Test|Error|Warning|\*\*|note:|error:|warning:|/)"
         return ${PIPESTATUS[0]}
     fi
 }
@@ -411,10 +412,14 @@ action_run_simulator() {
 action_test() {
     local config="$XCODE_TOOLS_CONFIG"
     local scheme=""
+    local test_class=""
+    local test_func=""
     while [[ $# -gt 0 ]]; do
         case $1 in
             -s|--scheme) scheme="$2"; shift 2 ;;
             -c|--config) config="$2"; shift 2 ;;
+            --test-class) test_class="$2"; shift 2 ;;
+            --test-func) test_func="$2"; shift 2 ;;
             *) shift ;;
         esac
     done
@@ -424,9 +429,26 @@ action_test() {
     _log_info "Project: $(basename "$_BUILD_TARGET")"
     [[ -z "$scheme" ]] && scheme=$(_select_scheme)
 
-    _log_step "Testing: ${scheme}"
+    local only_testing_args=()
+    if [[ -n "$test_class" ]] || [[ -n "$test_func" ]]; then
+        local test_target="${XCODE_TOOLS_TEST_TARGET:-${scheme}Tests}"
+        if [[ -n "$test_class" ]] && [[ -n "$test_func" ]]; then
+            only_testing_args=(-only-testing:"${test_target}/${test_class}/${test_func}")
+            _log_step "Testing Function: ${test_class}.${test_func}"
+        elif [[ -n "$test_class" ]]; then
+            only_testing_args=(-only-testing:"${test_target}/${test_class}")
+            _log_step "Testing Class: ${test_class}"
+        elif [[ -n "$test_func" ]]; then
+            only_testing_args=(-only-testing:"${test_target}/${test_func}")
+            _log_step "Testing Bare Function: ${test_func}"
+        fi
+    else
+        _log_step "Testing: ${scheme}"
+    fi
+
     _run_cmd xcodebuild test "$_BUILD_TARGET_FLAG" "$_BUILD_TARGET" \
-        -scheme "$scheme" -destination 'platform=macOS'
+        -scheme "$scheme" -destination 'platform=macOS' \
+        "${only_testing_args[@]}"
     local exit_code=$?
     if [[ $exit_code -ne 0 ]]; then
         _log_error "FAILED: Test ${scheme}"
@@ -434,6 +456,44 @@ action_test() {
         exit $exit_code
     fi
     _log_success "Tests passed: ${scheme}"
+}
+
+# --- Inline Test (Smart Wrapper) ---
+action_inline_test() {
+    local has_xcode=false
+    if find . -maxdepth 2 -name "*.xcodeproj" -o -name "*.xcworkspace" | grep -q .; then
+        has_xcode=true
+    fi
+
+    if [[ "$has_xcode" == "true" ]]; then
+        _log_info "Detected Xcode project, using xcodebuild..."
+        action_test "$@"
+    else
+        _log_info "No Xcode project detected, falling back to swift test..."
+        local class="" func=""
+        while [[ $# -gt 0 ]]; do
+            case $1 in
+                --test-class) class="$2"; shift 2 ;;
+                --test-func) func="$2"; shift 2 ;;
+                *) shift ;;
+            esac
+        done
+        
+        local filter=""
+        if [[ -n "$class" ]] && [[ -n "$func" ]]; then
+            filter="^\\w+\\.$class/$func\\b"
+        elif [[ -n "$class" ]]; then
+            filter="^\\w+\\.$class/"
+        elif [[ -n "$func" ]]; then
+            filter="^\\w+\\.$func\\b"
+        fi
+        
+        if [[ -n "$filter" ]]; then
+            _run_cmd swift test --filter "$filter"
+        else
+            _run_cmd swift test
+        fi
+    fi
 }
 
 # --- Clean ---
@@ -539,6 +599,7 @@ main() {
         run-macos)          action_run_macos "$@" ;;
         run-simulator)      action_run_simulator "$@" ;;
         test)               action_test "$@" ;;
+        inline-test)        action_inline_test "$@" ;;
         clean)              action_clean "$@" ;;
         stop-simulator)     action_stop_simulator "$@" ;;
         shutdown-simulator) action_shutdown_simulator ;;

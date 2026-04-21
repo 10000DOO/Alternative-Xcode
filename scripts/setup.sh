@@ -56,6 +56,15 @@ if [[ -f "$SCRIPT_DIR/test_helpers.sh" ]]; then
     log_success "Installed: $INSTALL_DIR/test_helpers.sh"
 fi
 
+# ── Check: xcbeautify (optional, not auto-installed) ──
+if command -v xcbeautify &>/dev/null; then
+    log_success "xcbeautify detected (prettier live output enabled)"
+else
+    log_info "xcbeautify not found — live build output will use a basic filter."
+    log_info "       (Optional) For prettier output:  brew install xcbeautify"
+    log_info "       Error summary works fine without it."
+fi
+
 # ── Step 2: Backup existing tasks.json ──
 if [[ -f "$TASKS_FILE" ]]; then
     BACKUP="$TASKS_FILE.backup.$(date +%Y%m%d_%H%M%S)"

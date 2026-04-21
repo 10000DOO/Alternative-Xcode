@@ -186,32 +186,110 @@ _cache_build_settings() {
 # Run command with optional xcbeautify + log capture for error reporting
 # ============================================================================
 _LAST_LOG="/tmp/xcode-tools-last-build.log"
+_BUILD_START=0
 
 _run_cmd() {
+    _BUILD_START=$SECONDS
+    local exit_code=0
+    # pipefail + set -e 는 파이프라인 실패 시 PIPESTATUS 캡처 전에 스크립트를 죽여
+    # _show_errors 호출이 건너뛰어진다. 파이프라인 구간만 일시적으로 off.
+    set +e
     if command -v xcbeautify &>/dev/null; then
         "$@" 2>&1 | tee "$_LAST_LOG" | xcbeautify
-        return ${PIPESTATUS[0]}
+        exit_code=${PIPESTATUS[0]}
     else
-        # Very simple fallback to filter out noise from xcodebuild when xcbeautify is missing
-        "$@" 2>&1 | tee "$_LAST_LOG" | grep -v "^    " | grep -E "^(===|Build|Test|Error|Warning|\*\*|note:|error:|warning:|/)"
-        return ${PIPESTATUS[0]}
+        # xcbeautify 없을 때: CompileSwift/Ld/WriteAuxiliaryFile 등 진행 라인을 제거하고
+        # 에러·경고·최종 요약 라인만 표시
+        "$@" 2>&1 | tee "$_LAST_LOG" | \
+            grep -E "(: error:|: fatal error:|: warning:|: note:|error generated\.|^\*\* BUILD|^=== BUILD TARGET)" | \
+            grep -v "^warning:.*was built for newer macOS version"
+        exit_code=${PIPESTATUS[0]}
     fi
+    set -e
+    return $exit_code
 }
 
 _show_errors() {
     local context="$1"
-    if [[ -f "$_LAST_LOG" ]]; then
-        local errors
-        errors=$(grep -E "(: error:|: fatal error:)" "$_LAST_LOG" | grep -v "^Command " | head -10)
-        if [[ -n "$errors" ]]; then
+    [[ ! -f "$_LAST_LOG" ]] && return
+
+    local error_lines error_count warn_count
+    error_lines=$(grep -E ": (error|fatal error):" "$_LAST_LOG" \
+        | grep -v "^Command " | grep -v "^CompileSwift" | grep -v "^note:")
+    error_count=$(echo "$error_lines" | grep -c . 2>/dev/null || echo "0")
+    [[ -z "$error_lines" ]] && error_count=0
+    warn_count=$(grep -cE ": warning:" "$_LAST_LOG" 2>/dev/null || echo "0")
+
+    echo ""
+    echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${RED}  BUILD FAILED${NC} — ${context}"
+    local summary=""
+    [[ "$error_count" -gt 0 ]] && summary+="${RED}${error_count} error(s)${NC}  "
+    [[ "$warn_count"  -gt 0 ]] && summary+="${YELLOW}${warn_count} warning(s)${NC}"
+    [[ -n "$summary" ]] && echo -e "  ${summary}"
+    echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+
+    if [[ "$error_count" -gt 0 ]]; then
+        echo ""
+        local shown=0
+        while IFS= read -r line; do
+            [[ -z "$line" ]] && continue
+            [[ $shown -ge 5 ]] && break
+
+            # 파싱: /abs/path/to/file.swift:10:20: error: message
+            local location msg
+            location=$(echo "$line" | grep -oE "^[^:]+:[0-9]+:[0-9]+" || true)
+            if [[ -n "$location" ]]; then
+                local rel_loc
+                rel_loc=$(echo "$location" | sed "s|^${SCRIPT_DIR}/||")
+                msg=$(echo "$line" | sed 's/.*: fatal error: //; s/.*: error: //')
+                echo -e "  ${RED}✗${NC} ${BOLD}${rel_loc}${NC}"
+                echo -e "    ${msg}"
+            else
+                echo -e "  ${RED}✗${NC} ${line}"
+            fi
+
+            # Clang/ObjC 에러의 바로 다음 2줄은 소스 코드 + 캐럿('^')인 경우가 많다.
+            # 에러 라인 번호를 찾아 다음 2줄을 컨텍스트로 표시. note: 라인이면 별도로 출력.
+            local line_num
+            line_num=$(grep -nF "$line" "$_LAST_LOG" 2>/dev/null | head -1 | cut -d: -f1)
+            if [[ -n "$line_num" ]]; then
+                local ctx1 ctx2
+                ctx1=$(sed -n "$((line_num+1))p" "$_LAST_LOG")
+                ctx2=$(sed -n "$((line_num+2))p" "$_LAST_LOG")
+
+                # 첫 번째 컨텍스트 라인: note: 면 note 스타일, 아니면 소스 코드로 간주
+                if [[ -n "$ctx1" ]]; then
+                    if echo "$ctx1" | grep -qE ": note:"; then
+                        local note_msg
+                        note_msg=$(echo "$ctx1" | sed 's/.*: note: //')
+                        echo -e "    ${CYAN}↳${NC} ${note_msg}"
+                    else
+                        echo -e "    ${CYAN}│${NC} ${ctx1}"
+                    fi
+                fi
+                # 두 번째 컨텍스트 라인: note: / 소스 코드 / 캐럿('^') 모두 커버
+                if [[ -n "$ctx2" ]]; then
+                    if echo "$ctx2" | grep -qE ": note:"; then
+                        local note_msg
+                        note_msg=$(echo "$ctx2" | sed 's/.*: note: //')
+                        echo -e "    ${CYAN}↳${NC} ${note_msg}"
+                    else
+                        echo -e "    ${CYAN}│${NC} ${ctx2}"
+                    fi
+                fi
+            fi
             echo ""
-            _log_error "=== Errors ($context) ==="
-            echo "$errors"
+            (( shown++ )) || true
+        done <<< "$error_lines"
+
+        if [[ "$error_count" -gt 5 ]]; then
+            echo -e "  ${YELLOW}... 및 $((error_count - 5))개 에러 더 있음${NC}"
+            echo ""
         fi
-        local warn_count
-        warn_count=$(grep -cE ": warning:" "$_LAST_LOG" 2>/dev/null || echo "0")
-        [[ "$warn_count" -gt 0 ]] && _log_warn "Warnings: ${warn_count}"
     fi
+
+    echo -e "${BLUE}[INFO]${NC} 전체 로그: ${_LAST_LOG}"
 }
 
 # ============================================================================
@@ -285,15 +363,16 @@ _build_one() {
     _run_cmd "${cmd[@]}"
     local exit_code=$?
 
+    local elapsed=$(( SECONDS - _BUILD_START ))
     if [[ $exit_code -eq 0 ]]; then
-        _log_success "SUCCEEDED: ${scheme} (${config})"
+        _log_success "SUCCEEDED: ${scheme} (${config}) — ${elapsed}s"
         _cache_build_settings "$_BUILD_TARGET_FLAG" "$_BUILD_TARGET" "$scheme"
         if [[ -n "$_PRODUCTS_DIR" ]] && [[ -d "$_PRODUCTS_DIR" ]]; then
             _log_info "Products: $_PRODUCTS_DIR"
             open "$_PRODUCTS_DIR"
         fi
     else
-        _log_error "FAILED: ${scheme} (${config})"
+        _log_error "FAILED: ${scheme} (${config}) — ${elapsed}s"
         _show_errors "Build"
     fi
     return $exit_code

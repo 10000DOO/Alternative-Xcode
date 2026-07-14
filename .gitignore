@@ -20,3 +20,9 @@ target/
 # Build logs
 build/
 *.log
+
+# Claude Code (local agent settings)
+.claude/
+
+# Zed grammar build cache
+grammars/

@@ -10,3 +10,7 @@ crate-type = ["cdylib"]
 zed_extension_api = "0.7.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+[workspace]
+members = ["bsp-server"]
+default-members = ["."]

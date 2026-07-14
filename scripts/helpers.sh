@@ -96,6 +96,16 @@ _discover_schemes_fallback() {
         | sed -n '/Schemes:/,/^$/p' | grep -v 'Schemes:' | sed 's/^[[:space:]]*//' | grep -v '^$'
 }
 
+# Scheme discovery scoped to a single .xcodeproj/.xcworkspace bundle (recursive BSP setup).
+# Kept bundle-scoped (not directory-wide) so a sibling tester project's schemes do not leak in.
+_discover_schemes_at() {
+    local bundle="$1"
+    {
+        find "$bundle" -path "*/xcshareddata/xcschemes/*.xcscheme" 2>/dev/null
+        find "$bundle" -path "*/xcuserdata/*/xcschemes/*.xcscheme" 2>/dev/null
+    } | while IFS= read -r f; do basename "$f" .xcscheme; done | sort -u
+}
+
 _select_scheme() {
     local schemes=()
     while IFS= read -r s; do
@@ -647,9 +657,10 @@ action_list() {
 }
 
 # --- .gitignore 등록 (중복 검사 후 append) ---
-_ensure_gitignore() {
-    local pattern="$1"
-    local gitignore="$SCRIPT_DIR/.gitignore"
+_ensure_gitignore_at() {
+    local dir="$1"
+    local pattern="$2"
+    local gitignore="$dir/.gitignore"
 
     if [[ ! -f "$gitignore" ]]; then
         echo "$pattern" > "$gitignore"
@@ -667,6 +678,213 @@ _ensure_gitignore() {
     fi
 }
 
+_ensure_gitignore() {
+    _ensure_gitignore_at "$SCRIPT_DIR" "$1"
+}
+
+# --- BSP prerequisites (provider binary + python3), shared by both modes ---
+# Sets the global _BSP_BIN; exits on failure.
+_BSP_BIN=""
+_bsp_require_tools() {
+    _BSP_BIN=""
+    if [[ -x "$HOME/.config/zed/xcode-tools/bin/xcode-bsp" ]]; then
+        _BSP_BIN="$HOME/.config/zed/xcode-tools/bin/xcode-bsp"
+    elif command -v xcode-bsp &>/dev/null; then
+        _BSP_BIN="$(command -v xcode-bsp)"
+    fi
+
+    if [[ -z "$_BSP_BIN" ]]; then
+        _log_error "xcode-bsp provider binary not found"
+        _log_info "Build & install it first: bash scripts/setup.sh (requires Rust/cargo)"
+        exit 1
+    fi
+
+    if ! command -v python3 &>/dev/null; then
+        _log_error "python3 not found (required to generate buildServer.json)"
+        _log_info "Install the Xcode Command Line Tools: xcode-select --install"
+        exit 1
+    fi
+}
+
+# --- Write one buildServer.json into <out_dir> (returns non-zero on failure) ---
+# Args: <bsp_bin> <project|workspace path> <flag> <scheme (may be empty)> <out_dir>
+_write_build_server() {
+    local bsp_bin="$1"
+    local project="$2"
+    local flag="$3"
+    local sch="$4"
+    local out_dir="$5"
+    local out="$out_dir/buildServer.json"
+
+    # Serialize with python3 for safe JSON escaping (paths may contain spaces).
+    # Values are passed via env vars so nothing is interpolated into the source.
+    # Field names (project/project_flag/scheme) must match bsp-server state.rs.
+    if ! BSP_BIN="$bsp_bin" BSP_PROJECT="$project" BSP_FLAG="$flag" BSP_SCHEME="$sch" \
+        python3 - "$out" <<'PYEOF'
+import json, os, sys
+
+doc = {
+    "name": "xcode-tools bsp",
+    "version": "0.1.0",
+    "bspVersion": "2.2.0",
+    "languages": ["c", "cpp", "objective-c", "objective-cpp", "swift"],
+    "argv": [os.environ["BSP_BIN"]],
+    # Canonical path so the server's srcroot (= project's parent) points at the
+    # real source tree even if the workspace reaches the project via a symlink.
+    "project": os.path.realpath(os.environ["BSP_PROJECT"]),
+    "project_flag": os.environ["BSP_FLAG"],
+}
+scheme = os.environ.get("BSP_SCHEME", "")
+if scheme:
+    doc["scheme"] = scheme
+
+# Write to a temp file then atomically rename so a mid-write failure never
+# leaves the project's buildServer.json 0-byte/partial.
+out = sys.argv[1]
+tmp = out + ".tmp"
+with open(tmp, "w") as f:
+    json.dump(doc, f, indent=2)
+    f.write("\n")
+os.replace(tmp, out)
+PYEOF
+    then
+        return 1
+    fi
+
+    [[ -s "$out" ]] || return 1
+    return 0
+}
+
+# --- Recursive BSP setup: one buildServer.json per discovered project/workspace ---
+# Used when the cwd has no directly-detectable project (e.g. a parent folder holding
+# many sub-projects). Continues past individual failures; exits 0 if nothing failed
+# or at least one target was created.
+_bsp_setup_recursive() {
+    local bsp_bin="$1"
+    local maxdepth=5
+
+    _log_step "Scanning for Xcode projects under $SCRIPT_DIR (recursive, depth $maxdepth)"
+
+    # 1) Standalone workspaces (ignore project.xcworkspace inside .xcodeproj bundles).
+    local workspaces=()
+    while IFS= read -r -d '' ws; do
+        workspaces+=("$ws")
+    done < <(find "$SCRIPT_DIR" -maxdepth "$maxdepth" -name "*.xcworkspace" ! -path "*.xcodeproj/*" -print0 2>/dev/null)
+
+    # Workspace directories: any .xcodeproj physically under one is treated as a
+    # workspace member and excluded from standalone-project processing (dedupe).
+    local ws_dirs=""
+    if [[ ${#workspaces[@]} -gt 0 ]]; then
+        local ws
+        for ws in "${workspaces[@]}"; do
+            ws_dirs+="$(dirname "$ws")"$'\n'
+        done
+    fi
+
+    # 2) Standalone .xcodeproj (not nested inside another .xcodeproj bundle),
+    #    excluding those that live under a workspace directory.
+    local projects=()
+    local pj
+    while IFS= read -r -d '' pj; do
+        local skip=false
+        local wd
+        while IFS= read -r wd; do
+            [[ -z "$wd" ]] && continue
+            if [[ "$pj" == "$wd/"* ]]; then skip=true; break; fi
+        done <<< "$ws_dirs"
+        [[ "$skip" == "true" ]] && continue
+        projects+=("$pj")
+    done < <(find "$SCRIPT_DIR" -maxdepth "$maxdepth" -name "*.xcodeproj" ! -path "*.xcodeproj/*" -print0 2>/dev/null)
+
+    local total=0 created=0 skipped=0 failed=0
+
+    # --- Workspaces: scheme omitted (server enumerates all member projects). ---
+    if [[ ${#workspaces[@]} -gt 0 ]]; then
+        for ws in "${workspaces[@]}"; do
+            total=$((total + 1))
+            local outdir; outdir="$(dirname "$ws")"
+            local name; name="$(basename "$outdir")"
+            if [[ -e "$outdir/buildServer.json" ]]; then
+                _log_info "SKIP  $name — buildServer.json already exists"
+                skipped=$((skipped + 1)); continue
+            fi
+            if _write_build_server "$bsp_bin" "$ws" "-workspace" "" "$outdir"; then
+                _ensure_gitignore_at "$outdir" "buildServer.json"
+                _log_success "OK    $name (workspace)"
+                created=$((created + 1))
+            else
+                _log_error "FAIL  $name (workspace) — could not write buildServer.json"
+                failed=$((failed + 1))
+            fi
+        done
+    fi
+
+    # --- Standalone projects: pick the main scheme by directory-name match. ---
+    if [[ ${#projects[@]} -gt 0 ]]; then
+        for pj in "${projects[@]}"; do
+            total=$((total + 1))
+            local outdir; outdir="$(dirname "$pj")"
+            local name; name="$(basename "$outdir")"
+            if [[ -e "$outdir/buildServer.json" ]]; then
+                _log_info "SKIP  $name — buildServer.json already exists"
+                skipped=$((skipped + 1)); continue
+            fi
+
+            local schemes=()
+            while IFS= read -r s; do [[ -n "$s" ]] && schemes+=("$s"); done < <(_discover_schemes_at "$pj")
+
+            local chosen=""
+            if [[ ${#schemes[@]} -eq 1 ]]; then
+                chosen="${schemes[0]}"
+            elif [[ ${#schemes[@]} -gt 1 ]]; then
+                # Main scheme = the one whose name equals the directory basename
+                # (case-insensitive). Verified 100% accurate across the sdks tree.
+                local target_lc; target_lc="$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]')"
+                local sc sc_lc
+                for sc in "${schemes[@]}"; do
+                    sc_lc="$(printf '%s' "$sc" | tr '[:upper:]' '[:lower:]')"
+                    if [[ "$sc_lc" == "$target_lc" ]]; then chosen="$sc"; break; fi
+                done
+                if [[ -z "$chosen" ]]; then
+                    _log_warn "SKIP  $name — multiple schemes, none match '$name': ${schemes[*]}"
+                    skipped=$((skipped + 1)); continue
+                fi
+            fi
+            # 0 schemes → chosen stays empty (omit -scheme, bind latest build scheme).
+
+            if _write_build_server "$bsp_bin" "$pj" "-project" "$chosen" "$outdir"; then
+                _ensure_gitignore_at "$outdir" "buildServer.json"
+                if [[ -n "$chosen" ]]; then
+                    _log_success "OK    $name (scheme: $chosen)"
+                else
+                    _log_success "OK    $name (no scheme — bind latest)"
+                fi
+                created=$((created + 1))
+            else
+                _log_error "FAIL  $name — could not write buildServer.json"
+                failed=$((failed + 1))
+            fi
+        done
+    fi
+
+    _log_step "BSP setup summary"
+    _log_info "Targets: $total   Created: $created   Skipped: $skipped   Failed: $failed"
+
+    if [[ $total -eq 0 ]]; then
+        _log_error "No .xcworkspace or .xcodeproj found under $SCRIPT_DIR (depth $maxdepth)"
+        exit 1
+    fi
+    if [[ $created -gt 0 ]]; then
+        _log_info "Provider: $bsp_bin"
+        _log_info "Reload/restart Zed so SourceKit-LSP picks up the new buildServer.json files."
+    fi
+    # Fail only when nothing succeeded and at least one target errored.
+    if [[ $created -eq 0 && $failed -gt 0 ]]; then
+        exit 1
+    fi
+    exit 0
+}
+
 # --- BSP Setup (writes buildServer.json pointing at our xcode-bsp provider) ---
 action_bsp_setup() {
     local scheme=""
@@ -677,6 +895,23 @@ action_bsp_setup() {
         esac
     done
 
+    # Prerequisites shared by single-target and recursive modes.
+    _bsp_require_tools
+
+    # Mode select: if a project/workspace is directly detectable (same criteria as
+    # _detect_project — a maxdepth-1 workspace or a maxdepth-2 project), keep the
+    # existing single-target behavior. Otherwise recurse into sub-directories so a
+    # parent folder holding many sub-projects can be set up in one pass.
+    local local_ws local_pj
+    local_ws="$(find "$SCRIPT_DIR" -maxdepth 1 -name "*.xcworkspace" ! -path "*.xcodeproj/*" 2>/dev/null || true)"
+    local_pj="$(find "$SCRIPT_DIR" -maxdepth 2 -name "*.xcodeproj" 2>/dev/null || true)"
+
+    if [[ -z "$local_ws" && -z "$local_pj" ]]; then
+        _bsp_setup_recursive "$_BSP_BIN"
+        return
+    fi
+
+    # ── Single-target mode (unchanged behavior) ──
     _detect_project
     _log_info "Project: $(basename "$_BUILD_TARGET")"
 
@@ -707,73 +942,15 @@ action_bsp_setup() {
         _log_info "Scheme: $scheme"
     fi
 
-    # Locate our installed BSP provider binary (built & installed by setup.sh Step 2/4).
-    local bsp_bin=""
-    if [[ -x "$HOME/.config/zed/xcode-tools/bin/xcode-bsp" ]]; then
-        bsp_bin="$HOME/.config/zed/xcode-tools/bin/xcode-bsp"
-    elif command -v xcode-bsp &>/dev/null; then
-        bsp_bin="$(command -v xcode-bsp)"
-    fi
-
-    if [[ -z "$bsp_bin" ]]; then
-        _log_error "xcode-bsp provider binary not found"
-        _log_info "Build & install it first: bash scripts/setup.sh (requires Rust/cargo)"
-        exit 1
-    fi
-
-    if ! command -v python3 &>/dev/null; then
-        _log_error "python3 not found (required to generate buildServer.json)"
-        _log_info "Install the Xcode Command Line Tools: xcode-select --install"
-        exit 1
-    fi
-
     _log_step "Generating buildServer.json"
-    local out="$SCRIPT_DIR/buildServer.json"
-
-    # Serialize with python3 for safe JSON escaping (paths may contain spaces).
-    # Values are passed via env vars so nothing is interpolated into the source.
-    # Field names (project/project_flag/scheme) must match bsp-server state.rs.
-    if ! BSP_BIN="$bsp_bin" BSP_PROJECT="$_BUILD_TARGET" BSP_FLAG="$_BUILD_TARGET_FLAG" BSP_SCHEME="$scheme" \
-        python3 - "$out" <<'PYEOF'
-import json, os, sys
-
-doc = {
-    "name": "xcode-tools bsp",
-    "version": "0.1.0",
-    "bspVersion": "2.2.0",
-    "languages": ["c", "cpp", "objective-c", "objective-cpp", "swift"],
-    "argv": [os.environ["BSP_BIN"]],
-    # Canonical path so the server's srcroot (= project's parent) points at the
-    # real source tree even if the workspace reaches the project via a symlink.
-    "project": os.path.realpath(os.environ["BSP_PROJECT"]),
-    "project_flag": os.environ["BSP_FLAG"],
-}
-scheme = os.environ.get("BSP_SCHEME", "")
-if scheme:
-    doc["scheme"] = scheme
-
-# Write to a temp file then atomically rename so a mid-write failure never
-# leaves the project's buildServer.json 0-byte/partial.
-out = sys.argv[1]
-tmp = out + ".tmp"
-with open(tmp, "w") as f:
-    json.dump(doc, f, indent=2)
-    f.write("\n")
-os.replace(tmp, out)
-PYEOF
-    then
-        _log_error "Failed to write buildServer.json"
-        exit 1
-    fi
-
-    if [[ ! -s "$out" ]]; then
-        _log_error "buildServer.json was not created in $SCRIPT_DIR"
+    if ! _write_build_server "$_BSP_BIN" "$_BUILD_TARGET" "$_BUILD_TARGET_FLAG" "$scheme" "$SCRIPT_DIR"; then
+        _log_error "Failed to write buildServer.json in $SCRIPT_DIR"
         exit 1
     fi
 
     _ensure_gitignore "buildServer.json"
     _log_success "buildServer.json generated in $SCRIPT_DIR"
-    _log_info "Provider: $bsp_bin"
+    _log_info "Provider: $_BSP_BIN"
     _log_info "Reload/restart Zed so SourceKit-LSP picks up buildServer.json."
 }
 

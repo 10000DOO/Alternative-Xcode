@@ -646,6 +646,137 @@ action_list() {
     done
 }
 
+# --- .gitignore 등록 (중복 검사 후 append) ---
+_ensure_gitignore() {
+    local pattern="$1"
+    local gitignore="$SCRIPT_DIR/.gitignore"
+
+    if [[ ! -f "$gitignore" ]]; then
+        echo "$pattern" > "$gitignore"
+        _log_success ".gitignore created with: $pattern"
+        return
+    fi
+
+    if grep -qxF "$pattern" "$gitignore"; then
+        _log_info ".gitignore already ignores: $pattern"
+    else
+        # 파일이 개행으로 끝나지 않으면 먼저 개행을 넣어 이전 항목과 병합되지 않게 함
+        [[ -n "$(tail -c1 "$gitignore")" ]] && printf '\n' >> "$gitignore"
+        echo "$pattern" >> "$gitignore"
+        _log_success ".gitignore updated with: $pattern"
+    fi
+}
+
+# --- BSP Setup (writes buildServer.json pointing at our xcode-bsp provider) ---
+action_bsp_setup() {
+    local scheme=""
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            -s|--scheme) scheme="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    _detect_project
+    _log_info "Project: $(basename "$_BUILD_TARGET")"
+
+    # 스킴 비대화식 해석 (Zed Task는 read 프롬프트 불가)
+    # Workspaces: the server enumerates ALL projects/targets and routes per file,
+    # so no scheme is needed — the single-project fail-safe must NOT apply here.
+    if [[ "$_BUILD_TARGET_FLAG" == "-workspace" ]]; then
+        _log_info "Workspace detected — enumerating all projects/targets (scheme omitted)."
+    elif [[ -z "$scheme" ]]; then
+        local schemes=()
+        while IFS= read -r s; do [[ -n "$s" ]] && schemes+=("$s"); done < <(_discover_schemes)
+        if [[ ${#schemes[@]} -eq 0 ]]; then
+            while IFS= read -r s; do [[ -n "$s" ]] && schemes+=("$s"); done < <(_discover_schemes_fallback)
+        fi
+
+        if [[ ${#schemes[@]} -eq 1 ]]; then
+            scheme="${schemes[0]}"
+            _log_info "Scheme: $scheme"
+        elif [[ ${#schemes[@]} -gt 1 ]]; then
+            _log_error "Multiple schemes found: ${schemes[*]}"
+            _log_error "Refusing to guess the LSP build context. Re-run with an explicit scheme:"
+            _log_error "  bsp-setup -s <scheme>"
+            exit 1
+        else
+            _log_warn "No schemes found — binding latest build scheme (omitting -scheme)"
+        fi
+    else
+        _log_info "Scheme: $scheme"
+    fi
+
+    # Locate our installed BSP provider binary (built & installed by setup.sh Step 2/4).
+    local bsp_bin=""
+    if [[ -x "$HOME/.config/zed/xcode-tools/bin/xcode-bsp" ]]; then
+        bsp_bin="$HOME/.config/zed/xcode-tools/bin/xcode-bsp"
+    elif command -v xcode-bsp &>/dev/null; then
+        bsp_bin="$(command -v xcode-bsp)"
+    fi
+
+    if [[ -z "$bsp_bin" ]]; then
+        _log_error "xcode-bsp provider binary not found"
+        _log_info "Build & install it first: bash scripts/setup.sh (requires Rust/cargo)"
+        exit 1
+    fi
+
+    if ! command -v python3 &>/dev/null; then
+        _log_error "python3 not found (required to generate buildServer.json)"
+        _log_info "Install the Xcode Command Line Tools: xcode-select --install"
+        exit 1
+    fi
+
+    _log_step "Generating buildServer.json"
+    local out="$SCRIPT_DIR/buildServer.json"
+
+    # Serialize with python3 for safe JSON escaping (paths may contain spaces).
+    # Values are passed via env vars so nothing is interpolated into the source.
+    # Field names (project/project_flag/scheme) must match bsp-server state.rs.
+    if ! BSP_BIN="$bsp_bin" BSP_PROJECT="$_BUILD_TARGET" BSP_FLAG="$_BUILD_TARGET_FLAG" BSP_SCHEME="$scheme" \
+        python3 - "$out" <<'PYEOF'
+import json, os, sys
+
+doc = {
+    "name": "xcode-tools bsp",
+    "version": "0.1.0",
+    "bspVersion": "2.2.0",
+    "languages": ["c", "cpp", "objective-c", "objective-cpp", "swift"],
+    "argv": [os.environ["BSP_BIN"]],
+    # Canonical path so the server's srcroot (= project's parent) points at the
+    # real source tree even if the workspace reaches the project via a symlink.
+    "project": os.path.realpath(os.environ["BSP_PROJECT"]),
+    "project_flag": os.environ["BSP_FLAG"],
+}
+scheme = os.environ.get("BSP_SCHEME", "")
+if scheme:
+    doc["scheme"] = scheme
+
+# Write to a temp file then atomically rename so a mid-write failure never
+# leaves the project's buildServer.json 0-byte/partial.
+out = sys.argv[1]
+tmp = out + ".tmp"
+with open(tmp, "w") as f:
+    json.dump(doc, f, indent=2)
+    f.write("\n")
+os.replace(tmp, out)
+PYEOF
+    then
+        _log_error "Failed to write buildServer.json"
+        exit 1
+    fi
+
+    if [[ ! -s "$out" ]]; then
+        _log_error "buildServer.json was not created in $SCRIPT_DIR"
+        exit 1
+    fi
+
+    _ensure_gitignore "buildServer.json"
+    _log_success "buildServer.json generated in $SCRIPT_DIR"
+    _log_info "Provider: $bsp_bin"
+    _log_info "Reload/restart Zed so SourceKit-LSP picks up buildServer.json."
+}
+
 # ============================================================================
 # Main Dispatcher
 # ============================================================================
@@ -662,6 +793,7 @@ main() {
         echo "  stop-simulator     Stop running simulator app"
         echo "  shutdown-simulator Shutdown all simulators"
         echo "  list               List available schemes"
+        echo "  bsp-setup          Set up SourceKit-LSP build context (buildServer.json)"
         echo ""
         echo "Options:"
         echo "  -s, --scheme    Scheme name (or 'all')"
@@ -683,6 +815,7 @@ main() {
         stop-simulator)     action_stop_simulator "$@" ;;
         shutdown-simulator) action_shutdown_simulator ;;
         list)               action_list ;;
+        bsp-setup)          action_bsp_setup "$@" ;;
         *)                  _log_error "Unknown action: $action"; exit 1 ;;
     esac
 }

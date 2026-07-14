@@ -45,7 +45,7 @@ if [[ ! -f "$HELPERS_SRC" ]]; then
 fi
 
 # ── Step 1: Copy helpers.sh ──
-log_info "Step 1/3: Installing scripts"
+log_info "Step 1/4: Installing scripts"
 mkdir -p "$INSTALL_DIR"
 cp "$HELPERS_SRC" "$HELPERS_DST"
 chmod +x "$HELPERS_DST"
@@ -65,18 +65,34 @@ else
     log_info "       Error summary works fine without it."
 fi
 
-# ── Step 2: Backup existing tasks.json ──
+# ── Step 2: Build & install LSP provider binary (non-fatal) ──
+log_info "Step 2/4: Building LSP provider (xcode-bsp)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+if ! command -v cargo &>/dev/null; then
+    log_warn "cargo not found — skipping LSP provider build."
+    log_warn "       Build/run/test/debug features work without it."
+    log_warn "       To enable the LSP provider later, install Rust (https://rustup.rs) and re-run setup."
+elif cargo build --release -p xcode-bsp-server --manifest-path "$REPO_ROOT/Cargo.toml"; then
+    mkdir -p "$INSTALL_DIR/bin"
+    cp "$REPO_ROOT/target/release/xcode-bsp" "$INSTALL_DIR/bin/xcode-bsp"
+    chmod +x "$INSTALL_DIR/bin/xcode-bsp"
+    log_success "Installed: $INSTALL_DIR/bin/xcode-bsp"
+else
+    log_warn "LSP provider build failed — continuing without it."
+fi
+
+# ── Step 3: Backup existing tasks.json ──
 if [[ -f "$TASKS_FILE" ]]; then
     BACKUP="$TASKS_FILE.backup.$(date +%Y%m%d_%H%M%S)"
-    log_info "Step 2/3: Backing up existing tasks.json"
+    log_info "Step 3/4: Backing up existing tasks.json"
     cp "$TASKS_FILE" "$BACKUP"
     log_success "Backup: $BACKUP"
 else
-    log_info "Step 2/3: No existing tasks.json — creating new"
+    log_info "Step 3/4: No existing tasks.json — creating new"
 fi
 
-# ── Step 3: Write new tasks.json ──
-log_info "Step 3/3: Configuring tasks.json"
+# ── Step 4: Write new tasks.json ──
+log_info "Step 4/4: Configuring tasks.json"
 
 HELPER_PATH_ESCAPED=$(echo "$HELPERS_DST" | sed 's/"/\\"/g')
 INSTALL_DIR_ESCAPED=$(echo "$INSTALL_DIR" | sed 's/"/\\"/g')
@@ -209,6 +225,14 @@ cat > "$TASKS_FILE" << TASKEOF
     "tags": ["xcode-list"]
   },
   {
+    "label": "Xcode: Setup LSP (BSP)",
+    "command": "\"${HELPER_PATH_ESCAPED}\" bsp-setup",
+    "cwd": "\$ZED_WORKTREE_ROOT",
+    "use_new_terminal": false,
+    "allow_concurrent_runs": false,
+    "tags": ["xcode-lsp"]
+  },
+  {
     "label": "Xcode: Run All Tests (helpers.sh)",
     "command": "bash \"${INSTALL_DIR_ESCAPED}/test_helpers.sh\" \"\$ZED_WORKTREE_ROOT\"",
     "use_new_terminal": false,
@@ -234,7 +258,10 @@ echo "  - Xcode: Clean"
 echo "  - Xcode: Simulator — Stop App"
 echo "  - Xcode: Simulator — Shutdown All"
 echo "  - Xcode: List Schemes"
+echo "  - Xcode: Setup LSP (BSP)"
 echo "  - Xcode: Run All Tests (helpers.sh)"
+echo ""
+echo "LSP: xcode-bsp provider binary built & installed to $INSTALL_DIR/bin (skipped if Rust/cargo not present)"
 echo ""
 echo -e "In Zed: ${BOLD}Cmd+Shift+P${NC} → ${BOLD}task: spawn${NC} → ${BOLD}Xcode:${NC}"
 echo ""

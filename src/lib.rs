@@ -2,6 +2,8 @@ use zed_extension_api as zed;
 use serde::{Deserialize, Serialize};
 
 const ADAPTER_NAME: &str = "xcode-debug";
+// Must match the `[language_servers.sourcekit-lsp]` table key in extension.toml.
+const SOURCEKIT_LSP_ID: &str = "sourcekit-lsp";
 
 // ── User config parsed from .zed/debug.json ──
 // Fields match lldb-dap's launch/attach request format directly.
@@ -46,6 +48,26 @@ fn resolve_dap_binary(
         return Ok((path, vec![]));
     }
     Err("lldb-dap not found. Install Xcode Command Line Tools or set a custom debug adapter path.".to_string())
+}
+
+// ── SourceKit-LSP resolution (mirrors zed-extensions/swift order; pure for unit tests) ──
+// Objective-C is routed to sourcekit-lsp because it honors our buildServer.json
+// and pushes sourceKitOptions args into its embedded clangd (design §8.0).
+
+fn resolve_sourcekit_lsp(
+    settings_binary: Option<(String, Option<Vec<String>>)>,
+    which_path: Option<String>,
+) -> (String, Vec<String>) {
+    // 1. Explicit path from Zed LSP settings.
+    if let Some((path, args)) = settings_binary {
+        return (path, args.unwrap_or_default());
+    }
+    // 2. sourcekit-lsp on PATH.
+    if let Some(path) = which_path {
+        return (path, vec![]);
+    }
+    // 3. Fallback: xcrun sourcekit-lsp (resolves the Xcode toolchain).
+    ("/usr/bin/xcrun".to_string(), vec![SOURCEKIT_LSP_ID.to_string()])
 }
 
 // ── Config validation (independent to keep get_dap_binary thin and unit-testable) ──
@@ -116,6 +138,34 @@ fn build_dap_configuration(config: &XcodeDebugConfig) -> Result<String, String> 
 impl zed::Extension for XcodeToolsExtension {
     fn new() -> Self {
         XcodeToolsExtension
+    }
+
+    fn language_server_command(
+        &mut self,
+        language_server_id: &zed::LanguageServerId,
+        worktree: &zed::Worktree,
+    ) -> Result<zed::Command, String> {
+        if language_server_id.as_ref() != SOURCEKIT_LSP_ID {
+            return Err(format!(
+                "Unknown language server: {}",
+                language_server_id.as_ref()
+            ));
+        }
+
+        // Explicit binary path/args from the user's Zed LSP settings, if set.
+        let settings_binary = zed::settings::LspSettings::for_worktree(SOURCEKIT_LSP_ID, worktree)
+            .ok()
+            .and_then(|s| s.binary)
+            .and_then(|b| b.path.map(|p| (p, b.arguments)));
+
+        let (command, args) =
+            resolve_sourcekit_lsp(settings_binary, worktree.which(SOURCEKIT_LSP_ID));
+
+        Ok(zed::Command {
+            command,
+            args,
+            env: worktree.shell_env(),
+        })
     }
 
     fn get_dap_binary(
@@ -527,5 +577,40 @@ mod tests {
     #[test]
     fn cwd_empty_string_falls_back_to_worktree_root() {
         assert_eq!(resolve_cwd(Some(""), "/root"), "/root");
+    }
+
+    // ── E. resolve_sourcekit_lsp (3-tier: settings > PATH > xcrun) ──
+
+    #[test]
+    fn sourcekit_uses_settings_path_first() {
+        let (cmd, args) = resolve_sourcekit_lsp(
+            Some(("/opt/skit".to_string(), Some(vec!["--flag".to_string()]))),
+            Some("/usr/bin/sourcekit-lsp".to_string()),
+        );
+        assert_eq!(cmd, "/opt/skit");
+        assert_eq!(args, vec!["--flag"]);
+    }
+
+    #[test]
+    fn sourcekit_settings_path_without_args() {
+        let (cmd, args) =
+            resolve_sourcekit_lsp(Some(("/opt/skit".to_string(), None)), None);
+        assert_eq!(cmd, "/opt/skit");
+        assert_eq!(args, Vec::<String>::new());
+    }
+
+    #[test]
+    fn sourcekit_falls_back_to_path_lookup() {
+        let (cmd, args) =
+            resolve_sourcekit_lsp(None, Some("/usr/local/bin/sourcekit-lsp".to_string()));
+        assert_eq!(cmd, "/usr/local/bin/sourcekit-lsp");
+        assert_eq!(args, Vec::<String>::new());
+    }
+
+    #[test]
+    fn sourcekit_falls_back_to_xcrun() {
+        let (cmd, args) = resolve_sourcekit_lsp(None, None);
+        assert_eq!(cmd, "/usr/bin/xcrun");
+        assert_eq!(args, vec!["sourcekit-lsp"]);
     }
 }

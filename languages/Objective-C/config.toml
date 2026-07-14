@@ -1,0 +1,24 @@
+# Objective-C language config + query files (*.scm in this dir) mirrored from
+# Akzestia/objcpp (MIT), which sources them from blacktop/zed-objc (MIT).
+# Grammar: tree-sitter-grammars/tree-sitter-objc @ 181a81b8f23a2d593e7ab4259981f50122909fda
+# (pinned in extension.toml). The .scm files retain their original MIT headers.
+name = "Objective-C"
+grammar = "objc"
+path_suffixes = ["m", "mm", "h", "hh"]
+line_comments = ["// "]
+brackets = [
+    { start = "{", end = "}", close = true, newline = true },
+    { start = "[", end = "]", close = true, newline = true },
+    { start = "(", end = ")", close = true, newline = false },
+    { start = "\"", end = "\"", close = true, newline = false, not_in = [
+        "string",
+    ] },
+    { start = "'", end = "'", close = true, newline = false, not_in = [
+        "string",
+        "comment",
+    ] },
+    { start = "/*", end = "*/", close = true, newline = false, not_in = [
+        "string",
+        "comment",
+    ] },
+]

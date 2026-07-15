@@ -202,13 +202,18 @@
   (sized_type_specifier)
 ] @keyword
 
+; Cocoa builtin/typedef types (clang classifies these as "type") -> cyan, like Xcode.
 [
   "BOOL"
   "IMP"
   "SEL"
-  "Class"
-  "id"
 ] @type.builtin
+
+; Class is class-kind (clang "class"), coloured like NSString/NSDate -> tan.
+"Class" @type
+
+; id is treated as a keyword in ObjC (clang emits no type token for it) -> keyword.
+"id" @keyword
 
 ; ---------------------------------------------------------------------------
 ; Identifiers (ORDER MATTERS — last match wins)

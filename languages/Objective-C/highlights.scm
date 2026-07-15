@@ -21,6 +21,14 @@
 ; OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 ; SOFTWARE.
 
+; Rewritten for Zed. Zed rule: for the same range, the LAST matching pattern
+; wins. So broad captures come first and specific ones come later.
+; Supported predicates only: #eq? #match? #any-of? (never #has-ancestor? etc.).
+
+; ---------------------------------------------------------------------------
+; Keywords (C + control flow)
+; ---------------------------------------------------------------------------
+
 [
   "const"
   "enum"
@@ -32,9 +40,6 @@
   "typedef"
   "union"
   "volatile"
-] @keyword
-
-[
   "break"
   "case"
   "continue"
@@ -47,7 +52,14 @@
   "return"
   "switch"
   "while"
-] @keyword.control
+  "__typeof__"
+  "__typeof"
+  "typeof"
+  "in"
+  "oneway"
+] @keyword
+
+; Preprocessor directive tokens
 
 [
   "#define"
@@ -58,8 +70,46 @@
   "#ifdef"
   "#ifndef"
   "#include"
+  "#import"
   (preproc_directive)
 ] @keyword
+
+; Objective-C @-directives
+
+[
+  "@interface"
+  "@implementation"
+  "@protocol"
+  "@end"
+  "@property"
+  "@synthesize"
+  "@dynamic"
+  "@selector"
+  "@autoreleasepool"
+  "@synchronized"
+  "@try"
+  "@catch"
+  "@finally"
+  "@throw"
+  "@import"
+  "@available"
+  "@optional"
+  "@required"
+  "@compatibility_alias"
+  "@defs"
+  "availability"
+  "__builtin_available"
+  "__covariant"
+  "__contravariant"
+  (visibility_specification)
+  (protocol_qualifier)
+] @keyword
+
+(class_declaration "@" @keyword "class" @keyword)
+
+; ---------------------------------------------------------------------------
+; Operators & punctuation
+; ---------------------------------------------------------------------------
 
 [
   "="
@@ -115,6 +165,17 @@
   "]"
 ] @punctuation.bracket
 
+"@" @punctuation.special
+
+; Method +/- sign (after operators so it wins over the "+"/"-" operator tokens)
+
+(method_definition ["+" "-"] @keyword)
+(method_declaration ["+" "-"] @keyword)
+
+; ---------------------------------------------------------------------------
+; Literals
+; ---------------------------------------------------------------------------
+
 [
   (string_literal)
   (system_lib_string)
@@ -132,191 +193,14 @@
 
 (null) @constant.builtin
 
-(identifier) @variable
-
-((identifier) @constant
- (#match? @constant "^_*[A-Z][A-Z\\d_]*$"))
-
-(call_expression
-  function: (identifier) @function)
-(call_expression
-  function: (field_expression
-    field: (field_identifier) @function))
-(function_declarator
-  declarator: (identifier) @function)
-(preproc_function_def
-  name: (identifier) @function.special)
-
-(field_identifier) @property
-(statement_identifier) @label
+; ---------------------------------------------------------------------------
+; Built-in types (C primitive type keywords + Cocoa builtin types)
+; ---------------------------------------------------------------------------
 
 [
-  (type_identifier)
   (primitive_type)
   (sized_type_specifier)
-] @type
-
-; Preprocs
-
-(preproc_undef
-  name: (_) @constant) @preproc
-
-; Includes
-
-(module_import "@import" @include path: (identifier) @namespace)
-
-((preproc_include
-  _ @include path: (_))
-  (#any-of? @include "#include" "#import"))
-
-; Type Qualifiers
-
-[
-  "@optional"
-  "@required"
-  "__covariant"
-  "__contravariant"
-  (visibility_specification)
-] @type.qualifier
-
-; Storageclasses
-
-[
-  "@autoreleasepool"
-  "@synthesize"
-  "@dynamic"
-  "volatile"
-  (protocol_qualifier)
 ] @keyword
-
-; Keywords
-
-[
-  "@protocol"
-  "@interface"
-  "@implementation"
-  "@compatibility_alias"
-  "@property"
-  "@selector"
-  "@defs"
-  "availability"
-  "@end"
-] @keyword
-
-(class_declaration "@" @keyword "class" @keyword) ; I hate Obj-C for allowing "@ class" :)
-
-(method_definition ["+" "-"] @keyword.function)
-(method_declaration ["+" "-"] @keyword.function)
-
-[
-  "__typeof__"
-  "__typeof"
-  "typeof"
-  "in"
-] @keyword.operator
-
-[
-  "@synchronized"
-  "oneway"
-] @keyword.coroutine
-
-; Exceptions
-
-[
-  "@try"
-  "__try"
-  "@catch"
-  "__catch"
-  "@finally"
-  "__finally"
-  "@throw"
-] @exception
-
-; Variables
-
-((identifier) @variable.builtin
-  (#any-of? @variable.builtin "self" "super"))
-
-; Functions & Methods
-
-[
-  "objc_bridge_related"
-  "@available"
-  "__builtin_available"
-  "va_arg"
-  "asm"
-] @function.builtin
-
-(method_definition (identifier) @method)
-
-(method_declaration (identifier) @method)
-
-(method_identifier (identifier)? @method ":" @method (identifier)? @method)
-
-(message_expression method: (identifier) @method.call)
-
-; Constructors
-
-((message_expression method: (identifier) @constructor)
-  (#eq? @constructor "init"))
-
-; Attributes
-
-(availability_attribute_specifier
-  [
-    "CF_FORMAT_FUNCTION" "NS_AVAILABLE" "__IOS_AVAILABLE" "NS_AVAILABLE_IOS"
-    "API_AVAILABLE" "API_UNAVAILABLE" "API_DEPRECATED" "NS_ENUM_AVAILABLE_IOS"
-    "NS_DEPRECATED_IOS" "NS_ENUM_DEPRECATED_IOS" "NS_FORMAT_FUNCTION" "DEPRECATED_MSG_ATTRIBUTE"
-    "__deprecated_msg" "__deprecated_enum_msg" "NS_SWIFT_NAME" "NS_SWIFT_UNAVAILABLE"
-    "NS_EXTENSION_UNAVAILABLE_IOS" "NS_CLASS_AVAILABLE_IOS" "NS_CLASS_DEPRECATED_IOS" "__OSX_AVAILABLE_STARTING"
-    "NS_ROOT_CLASS" "NS_UNAVAILABLE" "NS_REQUIRES_NIL_TERMINATION" "CF_RETURNS_RETAINED"
-    "CF_RETURNS_NOT_RETAINED" "DEPRECATED_ATTRIBUTE" "UI_APPEARANCE_SELECTOR" "UNAVAILABLE_ATTRIBUTE"
-  ]) @attribute
-
-; Macros
-
-(type_qualifier
-  [
-    "_Complex"
-    "_Nonnull"
-    "_Nullable"
-    "_Nullable_result"
-    "_Null_unspecified"
-    "__autoreleasing"
-    "__block"
-    "__bridge"
-    "__bridge_retained"
-    "__bridge_transfer"
-    "__complex"
-    "__kindof"
-    "__nonnull"
-    "__nullable"
-    "__ptrauth_objc_class_ro"
-    "__ptrauth_objc_isa_pointer"
-    "__ptrauth_objc_super_pointer"
-    "__strong"
-    "__thread"
-    "__unsafe_unretained"
-    "__unused"
-    "__weak"
-  ]) @function.macro.builtin
-
-[ "__real" "__imag" ] @function.macro.builtin
-
-((call_expression function: (identifier) @function.macro)
-  (#eq? @function.macro "testassert"))
-
-; Types
-
-(class_declaration (identifier) @type)
-
-(class_interface "@interface" . (identifier) @type superclass: _? @type category: _? @namespace)
-
-(class_implementation "@implementation" . (identifier) @type superclass: _? @type category: _? @namespace)
-
-(protocol_forward_declaration (identifier) @type) ; @interface :(
-
-(protocol_reference_list (identifier) @type) ; ^
 
 [
   "BOOL"
@@ -326,47 +210,70 @@
   "id"
 ] @type.builtin
 
-; Constants
+; ---------------------------------------------------------------------------
+; Identifiers (ORDER MATTERS — last match wins)
+; broad @variable first, then @function, then @constant, then self/super.
+; ---------------------------------------------------------------------------
 
-(property_attribute (identifier) @constant "="?)
+(identifier) @variable
 
-[ "__asm" "__asm__" ] @constant.macro
+(field_identifier) @property
 
-; Properties
-
-(property_implementation "@synthesize" (identifier) @property)
-
+; Objective-C ivars (project convention: _snake_case) -> property color, like Xcode.
+; Comes BEFORE the selector/method patterns so underscore-prefixed *selectors*
+; (e.g. [self _privateMethod]) still win as @function below (last match wins).
 ((identifier) @property
-  (#has-ancestor? @property struct_declaration))
+  (#match? @property "^_[a-z]"))
 
-; Parameters
+; Functions, C calls, message selectors, method names
+(call_expression
+  function: (identifier) @function)
+(call_expression
+  function: (field_expression
+    field: (field_identifier) @function))
+(function_declarator
+  declarator: (identifier) @function)
+(message_expression
+  method: (identifier) @function)
+(method_definition (identifier) @function)
+(method_declaration (identifier) @function)
+(method_identifier (identifier) @function)
 
-(method_parameter ":" @method (identifier) @parameter)
+; ALL_CAPS identifiers -> constant (enum consts; LSP refines real macros to green)
+((identifier) @constant
+  (#match? @constant "^_*[A-Z][A-Z\\d_]*$"))
 
-(method_parameter declarator: (identifier) @parameter)
+; self / super -> keyword
+((identifier) @keyword
+  (#any-of? @keyword "self" "super"))
 
-(parameter_declaration
-  declarator: (function_declarator
-                declarator: (parenthesized_declarator
-                              (block_pointer_declarator
-                                declarator: (identifier) @parameter))))
+; ---------------------------------------------------------------------------
+; Types, classes, protocols (identifier-based names come after @variable so
+; they win)
+; ---------------------------------------------------------------------------
 
-"..." @parameter.builtin
+(type_identifier) @type
 
-; Operators
+((type_identifier) @type.builtin
+  (#eq? @type.builtin "instancetype"))
 
-[
-  "^"
-] @operator
+(class_declaration (identifier) @type)
 
-; Literals
+(class_interface "@interface" . (identifier) @type superclass: _? @type category: _? @type)
 
-(platform) @string.special
+(class_implementation "@implementation" . (identifier) @type superclass: _? @type category: _? @type)
 
-(version_number) @text.uri @number
+(protocol_forward_declaration (identifier) @type)
 
-; Punctuation
+(protocol_reference_list (identifier) @type)
 
-"@" @punctuation.special
+; ---------------------------------------------------------------------------
+; Preprocessor macro names -> constant (LSP refines real macros to green)
+; ---------------------------------------------------------------------------
 
-[ "<" ">" ] @punctuation.bracket
+(preproc_def
+  name: (identifier) @constant)
+(preproc_function_def
+  name: (identifier) @constant)
+(preproc_undef
+  name: (_) @constant)

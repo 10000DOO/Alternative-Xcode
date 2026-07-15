@@ -81,6 +81,20 @@ else
     log_warn "LSP provider build failed — continuing without it."
 fi
 
+# ── Install sourcekit-lsp shim ──
+# Wraps sourcekit-lsp to strip the empty `params: {}` from its params-less
+# `workspace/*/refresh` requests, which Zed otherwise rejects
+# ("invalid type: map, expected unit") — that rejection stops Zed from
+# re-requesting semantic tokens, killing Xcode-accurate highlighting.
+# Point lsp.sourcekit-lsp.binary at: /usr/bin/python3 with this script as arg.
+mkdir -p "$INSTALL_DIR/bin"
+if cp "$SCRIPT_DIR/sourcekit-lsp-shim.py" "$INSTALL_DIR/bin/sourcekit-lsp-shim"; then
+    chmod +x "$INSTALL_DIR/bin/sourcekit-lsp-shim"
+    log_success "Installed: $INSTALL_DIR/bin/sourcekit-lsp-shim"
+else
+    log_warn "Could not install sourcekit-lsp shim — semantic highlighting may not update."
+fi
+
 # ── Step 3: Backup existing tasks.json ──
 if [[ -f "$TASKS_FILE" ]]; then
     BACKUP="$TASKS_FILE.backup.$(date +%Y%m%d_%H%M%S)"

@@ -5,9 +5,11 @@
 # Run once after installing the extension to configure Zed's tasks.json.
 #
 # What it does:
-#   1. Copies helpers.sh to ~/.config/zed/xcode-tools/helpers.sh
-#   2. Backs up existing ~/.config/zed/tasks.json
-#   3. Writes Xcode Tools tasks to tasks.json
+#   1. Copies helpers.sh / shim / bsp binary to ~/.config/zed/xcode-tools/
+#   2. Builds xcode-bsp when cargo is available
+#   3. Backs up existing ~/.config/zed/tasks.json
+#   4. Writes portable Xcode Tools tasks ($HOME-based, not /Users/<name>/)
+#   5. Points settings.json sourcekit-lsp at the installed shim (absolute path)
 #
 # Usage:
 #   bash scripts/setup.sh
@@ -45,7 +47,7 @@ if [[ ! -f "$HELPERS_SRC" ]]; then
 fi
 
 # ── Step 1: Copy helpers.sh ──
-log_info "Step 1/4: Installing scripts"
+log_info "Step 1/5: Installing scripts"
 mkdir -p "$INSTALL_DIR"
 cp "$HELPERS_SRC" "$HELPERS_DST"
 chmod +x "$HELPERS_DST"
@@ -66,7 +68,7 @@ else
 fi
 
 # ── Step 2: Build & install LSP provider binary (non-fatal) ──
-log_info "Step 2/4: Building LSP provider (xcode-bsp)"
+log_info "Step 2/5: Building LSP provider (xcode-bsp)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 if ! command -v cargo &>/dev/null; then
     log_warn "cargo not found — skipping LSP provider build."
@@ -98,157 +100,173 @@ fi
 # ── Step 3: Backup existing tasks.json ──
 if [[ -f "$TASKS_FILE" ]]; then
     BACKUP="$TASKS_FILE.backup.$(date +%Y%m%d_%H%M%S)"
-    log_info "Step 3/4: Backing up existing tasks.json"
+    log_info "Step 3/5: Backing up existing tasks.json"
     cp "$TASKS_FILE" "$BACKUP"
     log_success "Backup: $BACKUP"
 else
-    log_info "Step 3/4: No existing tasks.json — creating new"
+    log_info "Step 3/5: No existing tasks.json — creating new"
 fi
 
-# ── Step 4: Write new tasks.json ──
-log_info "Step 4/4: Configuring tasks.json"
+# ── Step 4: Write portable tasks.json ──
+# Use $HOME (expanded by Zed at task run time) so the same tasks.json works on
+# any machine/account without re-baking absolute /Users/<name>/... paths.
+log_info "Step 4/5: Configuring tasks.json (portable \$HOME paths)"
 
-HELPER_PATH_ESCAPED=$(echo "$HELPERS_DST" | sed 's/"/\\"/g')
-INSTALL_DIR_ESCAPED=$(echo "$INSTALL_DIR" | sed 's/"/\\"/g')
-
-cat > "$TASKS_FILE" << TASKEOF
+cat > "$TASKS_FILE" << 'TASKEOF'
 [
   {
-    "label": "\$ZED_CUSTOM_SWIFT_TEST_CLASS test",
-    "command": "\"${HELPER_PATH_ESCAPED}\"",
+    "label": "$ZED_CUSTOM_SWIFT_TEST_CLASS test",
+    "command": "$HOME/.config/zed/xcode-tools/helpers.sh",
     "args": [
       "inline-test",
       "--test-class",
-      "\$ZED_CUSTOM_SWIFT_TEST_CLASS"
+      "$ZED_CUSTOM_SWIFT_TEST_CLASS"
     ],
-    "cwd": "\$ZED_WORKTREE_ROOT",
+    "cwd": "$ZED_WORKTREE_ROOT",
     "use_new_terminal": false,
     "allow_concurrent_runs": false,
     "tags": ["swift-xctest-class", "swift-testing-suite"]
   },
   {
-    "label": "\$ZED_CUSTOM_SWIFT_TEST_CLASS.\$ZED_CUSTOM_SWIFT_TEST_FUNC test",
-    "command": "\"${HELPER_PATH_ESCAPED}\"",
+    "label": "$ZED_CUSTOM_SWIFT_TEST_CLASS.$ZED_CUSTOM_SWIFT_TEST_FUNC test",
+    "command": "$HOME/.config/zed/xcode-tools/helpers.sh",
     "args": [
       "inline-test",
       "--test-class",
-      "\$ZED_CUSTOM_SWIFT_TEST_CLASS",
+      "$ZED_CUSTOM_SWIFT_TEST_CLASS",
       "--test-func",
-      "\$ZED_CUSTOM_SWIFT_TEST_FUNC"
+      "$ZED_CUSTOM_SWIFT_TEST_FUNC"
     ],
-    "cwd": "\$ZED_WORKTREE_ROOT",
+    "cwd": "$ZED_WORKTREE_ROOT",
     "use_new_terminal": false,
     "allow_concurrent_runs": false,
     "tags": ["swift-xctest-func", "swift-testing-member-func"]
   },
   {
-    "label": "\$ZED_CUSTOM_SWIFT_TEST_FUNC test",
-    "command": "\"${HELPER_PATH_ESCAPED}\"",
+    "label": "$ZED_CUSTOM_SWIFT_TEST_FUNC test",
+    "command": "$HOME/.config/zed/xcode-tools/helpers.sh",
     "args": [
       "inline-test",
       "--test-func",
-      "\$ZED_CUSTOM_SWIFT_TEST_FUNC"
+      "$ZED_CUSTOM_SWIFT_TEST_FUNC"
     ],
-    "cwd": "\$ZED_WORKTREE_ROOT",
+    "cwd": "$ZED_WORKTREE_ROOT",
     "use_new_terminal": false,
     "allow_concurrent_runs": false,
     "tags": ["swift-testing-bare-func"]
   },
   {
     "label": "Xcode: Build (Debug)",
-    "command": "\"${HELPER_PATH_ESCAPED}\" build -c Debug",
+    "command": "$HOME/.config/zed/xcode-tools/helpers.sh",
+    "args": ["build", "-c", "Debug"],
     "use_new_terminal": false,
     "allow_concurrent_runs": false,
     "tags": ["xcode-build"]
   },
   {
     "label": "Xcode: Build (Release)",
-    "command": "\"${HELPER_PATH_ESCAPED}\" build -c Release",
+    "command": "$HOME/.config/zed/xcode-tools/helpers.sh",
+    "args": ["build", "-c", "Release"],
     "use_new_terminal": false,
     "allow_concurrent_runs": false,
     "tags": ["xcode-build"]
   },
   {
     "label": "Xcode: Build All (Debug)",
-    "command": "\"${HELPER_PATH_ESCAPED}\" build -s all -c Debug",
+    "command": "$HOME/.config/zed/xcode-tools/helpers.sh",
+    "args": ["build", "-s", "all", "-c", "Debug"],
     "use_new_terminal": false,
     "allow_concurrent_runs": false,
     "tags": ["xcode-build"]
   },
   {
     "label": "Xcode: Clean Build (Debug)",
-    "command": "\"${HELPER_PATH_ESCAPED}\" build --clean -c Debug",
+    "command": "$HOME/.config/zed/xcode-tools/helpers.sh",
+    "args": ["build", "--clean", "-c", "Debug"],
     "use_new_terminal": false,
     "allow_concurrent_runs": false,
     "tags": ["xcode-build"]
   },
   {
     "label": "Xcode: Clean Build (Release)",
-    "command": "\"${HELPER_PATH_ESCAPED}\" build --clean -c Release",
+    "command": "$HOME/.config/zed/xcode-tools/helpers.sh",
+    "args": ["build", "--clean", "-c", "Release"],
     "use_new_terminal": false,
     "allow_concurrent_runs": false,
     "tags": ["xcode-build"]
   },
   {
     "label": "Xcode: Run (macOS)",
-    "command": "\"${HELPER_PATH_ESCAPED}\" run-macos",
+    "command": "$HOME/.config/zed/xcode-tools/helpers.sh",
+    "args": ["run-macos"],
     "use_new_terminal": false,
     "allow_concurrent_runs": false,
     "tags": ["xcode-run"]
   },
   {
     "label": "Xcode: Run (Simulator)",
-    "command": "\"${HELPER_PATH_ESCAPED}\" run-simulator",
+    "command": "$HOME/.config/zed/xcode-tools/helpers.sh",
+    "args": ["run-simulator"],
     "use_new_terminal": false,
     "allow_concurrent_runs": false,
     "tags": ["xcode-run"]
   },
   {
     "label": "Xcode: Test",
-    "command": "\"${HELPER_PATH_ESCAPED}\" test",
+    "command": "$HOME/.config/zed/xcode-tools/helpers.sh",
+    "args": ["test"],
     "use_new_terminal": false,
     "allow_concurrent_runs": false,
     "tags": ["xcode-test"]
   },
   {
     "label": "Xcode: Clean",
-    "command": "\"${HELPER_PATH_ESCAPED}\" clean",
+    "command": "$HOME/.config/zed/xcode-tools/helpers.sh",
+    "args": ["clean"],
     "use_new_terminal": false,
     "allow_concurrent_runs": false,
     "tags": ["xcode-clean"]
   },
   {
     "label": "Xcode: Simulator — Stop App",
-    "command": "\"${HELPER_PATH_ESCAPED}\" stop-simulator",
+    "command": "$HOME/.config/zed/xcode-tools/helpers.sh",
+    "args": ["stop-simulator"],
     "use_new_terminal": false,
     "allow_concurrent_runs": false,
     "tags": ["xcode-simulator"]
   },
   {
     "label": "Xcode: Simulator — Shutdown All",
-    "command": "\"${HELPER_PATH_ESCAPED}\" shutdown-simulator",
+    "command": "$HOME/.config/zed/xcode-tools/helpers.sh",
+    "args": ["shutdown-simulator"],
     "use_new_terminal": false,
     "allow_concurrent_runs": false,
     "tags": ["xcode-simulator"]
   },
   {
     "label": "Xcode: List Schemes",
-    "command": "\"${HELPER_PATH_ESCAPED}\" list",
+    "command": "$HOME/.config/zed/xcode-tools/helpers.sh",
+    "args": ["list"],
     "use_new_terminal": false,
     "allow_concurrent_runs": false,
     "tags": ["xcode-list"]
   },
   {
     "label": "Xcode: Setup LSP (BSP)",
-    "command": "\"${HELPER_PATH_ESCAPED}\" bsp-setup",
-    "cwd": "\$ZED_WORKTREE_ROOT",
+    "command": "$HOME/.config/zed/xcode-tools/helpers.sh",
+    "args": ["bsp-setup"],
+    "cwd": "$ZED_WORKTREE_ROOT",
     "use_new_terminal": false,
     "allow_concurrent_runs": false,
     "tags": ["xcode-lsp"]
   },
   {
     "label": "Xcode: Run All Tests (helpers.sh)",
-    "command": "bash \"${INSTALL_DIR_ESCAPED}/test_helpers.sh\" \"\$ZED_WORKTREE_ROOT\"",
+    "command": "bash",
+    "args": [
+      "$HOME/.config/zed/xcode-tools/test_helpers.sh",
+      "$ZED_WORKTREE_ROOT"
+    ],
     "use_new_terminal": false,
     "allow_concurrent_runs": false,
     "tags": ["xcode-test-suite"]
@@ -256,7 +274,99 @@ cat > "$TASKS_FILE" << TASKEOF
 ]
 TASKEOF
 
-log_success "tasks.json configured"
+log_success "tasks.json configured (portable \$HOME paths)"
+
+# ── Step 5: Wire sourcekit-lsp shim in settings.json ──
+# Zed settings do not expand $HOME in lsp.binary.path, so we write the absolute
+# path for *this* user at setup time. Re-run setup on each machine after sync.
+SETTINGS_FILE="$ZED_CONFIG_DIR/settings.json"
+SHIM_DST="$INSTALL_DIR/bin/sourcekit-lsp-shim"
+log_info "Step 5/5: Configuring settings.json (sourcekit-lsp shim)"
+
+if [[ -x "$SHIM_DST" ]]; then
+    if [[ -f "$SETTINGS_FILE" ]]; then
+        cp "$SETTINGS_FILE" "$SETTINGS_FILE.backup.$(date +%Y%m%d_%H%M%S)"
+    fi
+    # shellcheck disable=SC2016
+    python3 - "$SETTINGS_FILE" "$SHIM_DST" <<'PY'
+import json, re, sys
+from pathlib import Path
+
+settings_path = Path(sys.argv[1])
+shim_path = sys.argv[2]
+
+binary = {
+    "path": "/usr/bin/python3",
+    "arguments": [shim_path],
+}
+
+def strip_jsonc(text: str) -> str:
+    # Drop // line comments and /* */ blocks outside strings (good enough for Zed settings).
+    out = []
+    i, n = 0, len(text)
+    in_str = False
+    esc = False
+    while i < n:
+        c = text[i]
+        if in_str:
+            out.append(c)
+            if esc:
+                esc = False
+            elif c == "\\":
+                esc = True
+            elif c == '"':
+                in_str = False
+            i += 1
+            continue
+        if c == '"':
+            in_str = True
+            out.append(c)
+            i += 1
+            continue
+        if c == "/" and i + 1 < n and text[i + 1] == "/":
+            while i < n and text[i] != "\n":
+                i += 1
+            continue
+        if c == "/" and i + 1 < n and text[i + 1] == "*":
+            i += 2
+            while i + 1 < n and not (text[i] == "*" and text[i + 1] == "/"):
+                i += 1
+            i = min(i + 2, n)
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+if settings_path.exists():
+    raw = settings_path.read_text(encoding="utf-8")
+    try:
+        data = json.loads(strip_jsonc(raw))
+    except json.JSONDecodeError as e:
+        print(f"WARN: could not parse settings.json ({e}); leaving file unchanged", file=sys.stderr)
+        sys.exit(0)
+else:
+    data = {}
+    raw = ""
+
+lsp = data.setdefault("lsp", {})
+sk = lsp.setdefault("sourcekit-lsp", {})
+sk["binary"] = binary
+
+# Prefer a clean rewrite when the original had no comments, else rewrite whole JSON.
+# Comments in the original file will be lost; a .backup.* was made above.
+settings_path.parent.mkdir(parents=True, exist_ok=True)
+settings_path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+print(f"OK: sourcekit-lsp binary -> python3 {shim_path}")
+PY
+    if [[ $? -eq 0 ]]; then
+        log_success "settings.json: sourcekit-lsp → $SHIM_DST"
+        log_info "       (settings uses an absolute path; re-run setup after copying config to another Mac)"
+    else
+        log_warn "Could not update settings.json — set lsp.sourcekit-lsp.binary manually"
+    fi
+else
+    log_warn "Shim not installed — skipped settings.json update"
+fi
 
 # ── Done ──
 echo ""
@@ -275,7 +385,13 @@ echo "  - Xcode: List Schemes"
 echo "  - Xcode: Setup LSP (BSP)"
 echo "  - Xcode: Run All Tests (helpers.sh)"
 echo ""
+echo "Paths are portable:"
+echo "  - tasks.json uses \$HOME/.config/zed/xcode-tools/... (sync-safe)"
+echo "  - settings.json lsp.binary is set to this machine's absolute shim path"
+echo "  - On a new Mac: clone + bash scripts/setup.sh (do not rely on copied absolute paths)"
+echo ""
 echo "LSP: xcode-bsp provider binary built & installed to $INSTALL_DIR/bin (skipped if Rust/cargo not present)"
+echo "LSP: sourcekit-lsp shim at $INSTALL_DIR/bin/sourcekit-lsp-shim (semantic token refresh fix)"
 echo ""
 echo -e "In Zed: ${BOLD}Cmd+Shift+P${NC} → ${BOLD}task: spawn${NC} → ${BOLD}Xcode:${NC}"
 echo ""

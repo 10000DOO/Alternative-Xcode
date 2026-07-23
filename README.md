@@ -69,12 +69,26 @@ Setup complete!
 ```
 
 **이게 뭘 하는 건가요?**
-- `helpers.sh`를 `~/.config/zed/xcode-tools/`에 복사합니다
-- 기존 `tasks.json`이 있으면 백업한 뒤 새로 구성합니다
-- Zed의 Task 목록에 Xcode 관련 명령이 자동으로 추가됩니다
+- `helpers.sh` / `sourcekit-lsp-shim` 등을 `~/.config/zed/xcode-tools/`에 복사합니다
+- 기존 `tasks.json` / `settings.json`이 있으면 백업한 뒤 새로 구성합니다
+- Zed Task 목록에 Xcode 관련 명령을 추가합니다 (`$HOME` 경로 → **어떤 Mac/계정에서도 동일 파일 사용 가능**)
+- `settings.json`의 `sourcekit-lsp`를 설치된 shim으로 연결합니다 (시맨틱 하이라이트 refresh 호환)
 
 > 기존에 xbuild 기반 task를 쓰고 있었다면, setup이 자동으로 교체합니다.
-> 원본은 `tasks.json.backup.날짜` 파일로 보관됩니다.
+> 원본은 `tasks.json.backup.날짜` / `settings.json.backup.날짜` 파일로 보관됩니다.
+
+### 다른 PC에서 쓸 때
+
+`tasks.json`은 `$HOME` 기반이라 그대로 복사해도 됩니다.  
+다만 `settings.json`의 LSP binary 경로는 **해당 Mac의 절대 경로**로 기록됩니다(Zed가 settings에서 `$HOME`을 확장하지 않음).
+
+새 Mac에서는 항상:
+
+```bash
+bash scripts/setup.sh
+```
+
+한 번 실행하세요. 다른 사용자 홈 경로(`/Users/다른사람/...`)를 수동으로 박아 두지 마세요.
 
 ---
 
@@ -183,6 +197,16 @@ setup 스크립트를 실행했는지 확인하세요:
 cd Alternative-Xcode
 bash scripts/setup.sh
 ```
+
+### sourcekit-lsp: "can't open file .../sourcekit-lsp-shim"
+
+다른 계정의 절대 경로가 `settings.json`에 남아 있거나, setup을 안 돌려 shim이 없는 상태입니다.
+
+```bash
+bash scripts/setup.sh   # shim 설치 + settings 경로를 현재 $HOME 기준으로 재기록
+```
+
+그다음 Zed를 재시작하세요.
 
 ### xcbeautify 설치 방법
 
